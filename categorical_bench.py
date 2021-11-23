@@ -1,30 +1,24 @@
 import cudf
 import cupy as cp
+import pytest
 
-from pynvml import nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlInit
-import rmm
 
-import pandas as pd
+# @pytest.fixture(params=[100, 100_000, 100_000_000])
+# def cardinality(request):
+#     return request.param
 
-import time
-import itertools
-import argparse
+# @pytest.fixture(params=[100, 100_000, 100_000_000])
+# def n_rows(request):
+#     return request.param
 
-def rmm_pool():
-    nvmlInit()
-    free_mem = nvmlDeviceGetMemoryInfo(nvmlDeviceGetHandleByIndex(0)).free
-    pool_size = 0.95 * free_mem
-    pool_size -= pool_size%256
-    cudf.set_allocator(pool=True, initial_pool_size=pool_size)
-    cp.cuda.set_allocator(rmm.rmm_cupy_allocator)
-
-def warm_up():
-    _ = cp.array([1, 2, 3])
-    _ = cudf.Series([1, 2, 3])
-
-def set_category_worst_bench(cardinality, n_rows):
+@pytest.mark.parametrize("cardinality", [100, 100_000, 100_000_000])
+@pytest.mark.parametrize("n_rows", [100, 100_000, 100_000_000])
+def set_category_requires_promote_type_bench(benchmark, cardinality, n_rows):
     """
-    Benchmarks `cat.set_category` efficiency, in worst case
+    Benchmarks `cat.set_category` efficiency
+
+    The new numeric category types are different from old cats.
+    And one of them require to be promoted to the matching type.
 
     Example in small scale:
     old_cats: [0, 1, 2, 3, 4]
@@ -33,21 +27,22 @@ def set_category_worst_bench(cardinality, n_rows):
     new_cats: [2.0, 3.0, 4.0, 5.0, 6.0]
     new_codes: [-1, -1, 0, 1, 2]
     """
+    if cardinality > n_rows:
+        pytest.skip()
+
     old_categories = cp.arange(0, cardinality).astype("int")
     old_items = cp.tile(old_categories,  int(n_rows / cardinality))
     old = cudf.Series(old_items, dtype="category")
 
     new_categories = cp.arange(int(cardinality / 2), int(cardinality / 2)+cardinality).astype("float32")
 
-    t = time.time()
-    new = old.cat.set_categories(new_categories)
-    t = time.time() - t
+    benchmark(old.cat.set_categories, new_categories)
 
-    return t
-
-def set_category_avg_bench(cardinality, n_rows):
+@pytest.mark.parametrize("cardinality", [100, 100_000, 100_000_000])
+@pytest.mark.parametrize("n_rows", [100, 100_000, 100_000_000])
+def set_category_no_promote_type_bench(benchmark, cardinality, n_rows):
     """
-    Benchmarks `cat.set_category` efficiency, in avg case
+    Benchmarks `cat.set_category` efficiency
 
     Example in small scale:
     old_cats: [0, 1, 2, 3, 4]
@@ -56,22 +51,25 @@ def set_category_avg_bench(cardinality, n_rows):
     new_cats: [2, 3, 4, 5, 6]
     new_codes: [0, 1, 2, -1, -1]
     """
+    if cardinality > n_rows:
+        pytest.skip()
+
     old_categories = cp.arange(0, cardinality)
     old_items = cp.tile(old_categories,  int(n_rows / cardinality))
     old = cudf.Series(old_items, dtype="category")
 
     new_categories = cp.arange(int(cardinality / 2), int(cardinality / 2)+cardinality)
 
-    t = time.time()
-    new = old.cat.set_categories(new_categories)
-    t = time.time() - t
+    benchmark(old.cat.set_categories, new_categories)
 
-    return t
-
-def join_bench(cardinality, n_rows):
+@pytest.mark.parametrize("cardinality", [100, 100_000, 100_000_000])
+@pytest.mark.parametrize("n_rows", [100, 100_000, 100_000_000])
+def join_bench(benchmark, cardinality, n_rows):
     """
     Joins two tables using categorical column as key
     """
+    if cardinality > n_rows:
+        pytest.skip()
 
     categories = cp.arange(0, cardinality)
     items = cp.tile(categories,  int(n_rows / cardinality))
@@ -84,16 +82,16 @@ def join_bench(cardinality, n_rows):
     rkey = key[::-1]
     rhs = cudf.DataFrame({'key': rkey, 'rpayload': payload})
 
-    t = time.time()
-    _ = lhs.join(rhs, rsuffix="_r")
-    t = time.time() - t
+    benchmark(lhs.join, rhs, rsuffix="_r")
 
-    return t
-
-def concat_bench(cardinality, n_rows):
+@pytest.mark.parametrize("cardinality", [100, 100_000, 100_000_000])
+@pytest.mark.parametrize("n_rows", [100, 100_000, 100_000_000])
+def concat_bench(benchmark, cardinality, n_rows):
     """
     Concats two series, wher lhs, rhs
     """
+    if cardinality > n_rows:
+        pytest.skip()
 
     cat = cp.arange(0, cardinality)
 
@@ -103,31 +101,31 @@ def concat_bench(cardinality, n_rows):
     ritems = cp.tile(cat,  int(n_rows / cardinality))
     rhs = cudf.Series(ritems, dtype="category")
 
-    t = time.time()
-    _ = cudf.concat([lhs, rhs])
-    t = time.time() - t
+    benchmark(cudf.concat, [lhs, rhs])
 
-    return t
-
-def sort_values_bench(cardinality, n_rows):
+@pytest.mark.parametrize("cardinality", [100, 100_000, 100_000_000])
+@pytest.mark.parametrize("n_rows", [100, 100_000, 100_000_000])
+def sort_values_bench(benchmark, cardinality, n_rows):
     """
     Sort a categorical column
     """
+    if cardinality > n_rows:
+        pytest.skip()
 
     cat = cp.arange(0, cardinality)
     items = cp.tile(cat,  int(n_rows / cardinality))
     s = cudf.Series(items, dtype="category")
 
-    t = time.time()
-    _ = s.sort_values()
-    t = time.time() - t
+    benchmark(s.sort_values)
 
-    return t
-
-def fillna_bench(cardinality, n_rows):
+@pytest.mark.parametrize("cardinality", [100, 100_000, 100_000_000])
+@pytest.mark.parametrize("n_rows", [100, 100_000, 100_000_000])
+def fillna_bench(benchmark, cardinality, n_rows):
     """
     Sort a categorical column
     """
+    if cardinality > n_rows:
+        pytest.skip()
 
     cat = cp.arange(0, cardinality)
     items = cp.tile(cat,  int(n_rows / cardinality))
@@ -138,37 +136,4 @@ def fillna_bench(cardinality, n_rows):
 
     fill_values = cudf.Series(cp.full(n_rows, 0), dtype=s.dtype)
 
-    t = time.time()
-    _ = s.fillna(fill_values)
-    t = time.time() - t
-
-    return t
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('flag', type=str, help="Before or after")
-    args = parser.parse_args()
-
-    rmm_pool()
-    warm_up()
-
-    repeat = 20
-    total_t = 0
-
-    # n_rows = [10]
-    # n_categories = [10]
-
-    n_rows = [100, 100_000, 100_000_000]
-    n_categories = [100, 100_000, 100_000_000]
-
-    results = pd.DataFrame()
-
-    for n_row, n_cat in itertools.product(n_rows, n_categories):
-        if n_row >= n_cat:
-            for _ in range(repeat):
-                total_t += fillna_bench(n_cat, n_row)
-            avg_t = total_t / repeat
-            
-            results.loc[n_row, n_cat] = avg_t
-
-    results.to_json(f"categorical_bench_{args.flag}.json")
+    benchmark(s.fillna, fill_values)
